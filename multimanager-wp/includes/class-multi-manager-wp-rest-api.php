@@ -1062,6 +1062,12 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 			'version' => $current_version,
 			'home_url' => $url,
 			'wp_url' => $wpurl,
+			'php_version' => phpversion(),
+			'php_handler' => $this->get_php_handler(),
+			'path' => ABSPATH,
+			'ssl' => $this->get_ssl_certificate_type(),
+			'wp_debug' => defined('WP_DEBUG') && WP_DEBUG,
+			'mysql' => $this->get_mysql_info()
 		];
 
 		return rest_ensure_response( $result );
@@ -1077,6 +1083,77 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 
 
 	// Private methods
+	
+	/**
+	 * Retrieves the PHP handler.
+	 *
+	 * @return string PHP handler.
+	 */
+	private function get_php_handler() {
+		return php_sapi_name();
+	}
+
+	/**
+	 * Retrieves MySQL information.
+	 *
+	 * @global wpdb $wpdb WordPress database abstraction object.
+	 * @return array MySQL information including version, user, database name, host, charset, and collate.
+	 */
+	private function get_mysql_info() {
+		global $wpdb;
+		$info = array(
+			'version' => $wpdb->get_var("SELECT VERSION()"),
+			'user' => $wpdb->dbuser,
+			'name' => $wpdb->dbname,
+			'host' => $wpdb->dbhost,
+			'charset' => defined('DB_CHARSET') ? DB_CHARSET : '',
+			'collate' => defined('DB_COLLATE') ? DB_COLLATE : ''
+		);
+		return $info;
+	}
+
+	/**
+	 * Retrieves the SSL certificate type, issuer, and validity.
+	 *
+	 * @return array SSL certificate details or error message.
+	 *     - 'certificate_type' (string): The type of the SSL certificate.
+	 *     - 'issuer' (string): The issuer of the SSL certificate.
+	 *     - 'valid_from' (string): The date and time when the SSL certificate is valid from.
+	 *     - 'valid_to' (string): The date and time when the SSL certificate is valid until.
+	 *     - 'error' (string): Error message if any issues occur during the process.
+	 */	
+	private function get_ssl_certificate_type() {
+		$url = get_site_url();
+		$parsed_url = parse_url($url);
+		$host = $parsed_url['host'];
+
+		$stream_context = stream_context_create(array("ssl" => array("capture_peer_cert" => true)));
+		$socket_client = @stream_socket_client("ssl://".$host.":443", $errno, $errstr, 30, STREAM_CLIENT_CONNECT, $stream_context);
+
+		if (!$socket_client) {
+			return ['error' => "connection_failed" , 'error_msg' => "$host $errstr ($errno)"];
+		}
+
+		$context_params = stream_context_get_params($socket_client);
+		$cert_resource = $context_params["options"]["ssl"]["peer_certificate"];
+		$cert_info = openssl_x509_parse($cert_resource);
+
+		if (!$cert_info) {
+			return ['error' => "unable_to_parse_ssl_certificate."];
+		}
+
+		$issuer = $cert_info['issuer']['O'];
+		$valid_from = date('Y-m-d H:i:s', $cert_info['validFrom_time_t']);
+		$valid_to = date('Y-m-d H:i:s', $cert_info['validTo_time_t']);
+		$cert_type = isset($cert_info['extensions']['basicConstraints']) && $cert_info['extensions']['basicConstraints'] == 'CA:FALSE' ? 'end_entity_certificate' : 'ca_certificate';
+
+		return [
+			"certificate_type" =>  $cert_type,
+			"issuer"  => $issuer,
+			"valid_from" => $valid_from,
+			"valid_to" => $valid_to
+		];
+	}
 
 	/**
 	 * This method is used to set the authentication cookies based on user ID.
@@ -1109,7 +1186,7 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 			delete_user_meta( $user->ID, 'multi_manager_wp_login_token' );
 			wp_set_current_user( $user->ID );
 			wp_set_auth_cookie( $user->ID );
-			// skip wp_login action due to 
+			// skip wp_login action due to
 			// do_action( 'wp_login', $user->user_login, $user );
 
 			return ( is_user_logged_in() and $current_user->user_login === $username );
