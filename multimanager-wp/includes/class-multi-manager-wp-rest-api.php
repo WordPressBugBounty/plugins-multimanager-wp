@@ -1142,6 +1142,7 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 			return ['error' => "unable_to_parse_ssl_certificate."];
 		}
 
+		date_default_timezone_set('UTC');
 		$issuer = $cert_info['issuer']['O'];
 		$valid_from = date('Y-m-d H:i:s', $cert_info['validFrom_time_t']);
 		$valid_to = date('Y-m-d H:i:s', $cert_info['validTo_time_t']);
