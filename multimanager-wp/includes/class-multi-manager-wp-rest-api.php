@@ -47,7 +47,7 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 				),
 			),
 		) );
-		register_rest_route( $namespace, '/' . $users . '/impersonate', array(
+		/*register_rest_route( $namespace, '/' . $users . '/impersonate', array(
 			array(
 				'methods'             => WP_REST_Server::READABLE,
 				'callback'            => array( $this, 'impersonate_user' ),
@@ -79,7 +79,7 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 					),
 				),
 			),
-		) );
+		) );*/
 
 		register_rest_route( $namespace, '/' . $plugins, array(
 			array(
