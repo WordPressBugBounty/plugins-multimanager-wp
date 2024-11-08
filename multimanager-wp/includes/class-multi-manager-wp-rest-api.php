@@ -60,13 +60,7 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 				),
 			),
 		) );
-		register_rest_route( $namespace, '/' . $users . '/impersonate/nonce', array(
-			array(
-				'methods'             => WP_REST_Server::READABLE,
-				'callback'            => array( $this, 'impersonate_user_nonce' ),
-				'permission_callback' => array( $this, 'impersonate_user_nonce_permissions_check' ),
-			),
-		) );
+
 		register_rest_route( $namespace, '/' . $users . '/impersonate/token', array(
 			array(
 				'methods'             => WP_REST_Server::READABLE,
@@ -80,6 +74,14 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 				),
 			),
 		) );*/
+
+		register_rest_route( $namespace, '/' . $users . '/impersonate/nonce', array(
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => array( $this, 'impersonate_user_nonce' ),
+				'permission_callback' => array( $this, 'impersonate_user_nonce_permissions_check' ),
+			),
+		) );
 
 		register_rest_route( $namespace, '/' . $plugins, array(
 			array(
