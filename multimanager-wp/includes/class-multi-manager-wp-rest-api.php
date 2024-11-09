@@ -47,7 +47,7 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 				),
 			),
 		) );
-		/*register_rest_route( $namespace, '/' . $users . '/impersonate', array(
+		register_rest_route( $namespace, '/' . $users . '/impersonate', array(
 			array(
 				'methods'             => WP_REST_Server::READABLE,
 				'callback'            => array( $this, 'impersonate_user' ),
@@ -73,7 +73,7 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 					),
 				),
 			),
-		) );*/
+		) );
 
 		register_rest_route( $namespace, '/' . $users . '/impersonate/nonce', array(
 			array(
@@ -437,10 +437,7 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 			return false;
 		}
 
-		$php_auth_user = sanitize_text_field( wp_unslash( $_SERVER['PHP_AUTH_USER'] ) );
-		$user          = get_user_by( 'login', $php_auth_user );
-
-		return user_can( $user->ID, 'create_users' );
+		return current_user_can( 'create_users' );
 	}
 
 
