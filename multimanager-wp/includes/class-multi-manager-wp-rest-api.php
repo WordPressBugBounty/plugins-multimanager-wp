@@ -632,10 +632,15 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 	 */
 	public function plugins_updates() {
 		require_once ABSPATH . 'wp-admin/includes/plugin.php';
-		$update_plugins = get_site_transient( 'update_plugins' );
-		$plugins        = [];
+		wp_clean_plugins_cache();
 		wp_update_plugins();
-		wp_cache_flush();
+
+		$update_plugins = get_site_transient( 'update_plugins' );
+
+		if ( ! $update_plugins || ! isset( $update_plugins->response ) ) {
+			return new WP_REST_Response( [] );
+		}
+		$plugins = [];
 
 		foreach ( get_plugins() as $file => $data ) {
 			$data['file']   = $file;
