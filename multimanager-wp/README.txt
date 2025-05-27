@@ -1,8 +1,9 @@
 === MultiManager WP - Manage All Your WordPress Sites Easily ===
 Contributors: icdsoft, madjarov
 Tags: rest-api, custom api, manage sites, multiple site manager
-Requires at least: 6.0
-Tested up to: 6.7
+Requires at least: 6.3
+Tested up to: 6.8
+Requires PHP: 7.4
 Stable tag: 1.1.3
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
