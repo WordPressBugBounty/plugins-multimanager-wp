@@ -389,6 +389,7 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 
 		wp_cache_flush();
 		ob_end_clean();
+
 		return new WP_REST_Response( $data, 200 );
 	}
 
@@ -544,10 +545,20 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 		$file     = $request->get_file_params();
 		$activate = sanitize_text_field( wp_unslash( $request->get_param( 'activate' ) ) );
 
-
 		// Check if the file is a zip file
 		if ( $file['plugin_file']['type'] !== 'application/zip' ) {
 			return new WP_Error( 'invalid_file_type', 'Invalid file type. Only .zip files are allowed.', array( 'status' => 400 ) );
+		}
+
+		// Set max file size (128MB)
+		$max_file_size = 128 * 1024 * 1024; // 128 MB
+
+		if ( $file['plugin_file']['size'] > $max_file_size ) {
+			return new WP_Error(
+				'file_too_large',
+				'File size exceeds the 128MB limit.',
+				array( 'status' => 400 )
+			);
 		}
 
 		if ( ! function_exists( 'wp_handle_upload' ) ) {
@@ -555,8 +566,7 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 		}
 		$uploaded_file    = isset( $file['plugin_file'] ) ? wp_unslash( $file['plugin_file'] ) : '';
 		$upload_overrides = array( 'test_form' => false );
-
-		$move_file = wp_handle_upload( $uploaded_file, $upload_overrides );
+		$move_file        = wp_handle_upload( $uploaded_file, $upload_overrides );
 
 		if ( $move_file && ! isset( $move_file['error'] ) ) {
 			$tmp_zip_file = $move_file['file'];
@@ -564,41 +574,98 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 			return new WP_Error( 'upload_error', 'Unable to upload plugin file.!', array( 'status' => 500 ) );
 		}
 
-		// Unzip the plugin file
+		// Extract to a temporary directory
+		$tmp_dir = wp_tempnam();
+		if ( file_exists( $tmp_dir ) ) {
+			unlink( $tmp_dir );
+		}
+		mkdir( $tmp_dir );
+
 		$zip = new ZipArchive;
 		if ( $zip->open( $tmp_zip_file ) === true ) {
-			$zip->extractTo( WP_PLUGIN_DIR );
+			$zip->extractTo( $tmp_dir );
 			$zip->close();
 			wp_delete_file( $tmp_zip_file );
 		} else {
 			return new WP_Error( 'unzip_error', 'Unable to unzip plugin file.', array( 'status' => 500 ) );
 		}
 
-		$plugin_name = basename( sanitize_text_field( $file['plugin_file']['name'] ), '.zip' );
-		$plugin_name = strtok( $plugin_name, '.' );
+		// Validate plugin structure
+		$plugin_dirs = glob( $tmp_dir . '/*', GLOB_ONLYDIR );
+		if ( empty( $plugin_dirs ) ) {
+			return new WP_Error( 'invalid_plugin', 'No plugin found in the ZIP.', array( 'status' => 400 ) );
+		}
+		$plugin_dir = $plugin_dirs[0];
 
-		wp_update_plugins();
-		wp_cache_flush();
-		$all_plugins = get_plugins();
-		$slug        = '';
+		// Find the main plugin file
+		$plugin_files = glob( $plugin_dir . '/*.php' );
+		$main_file    = '';
+		foreach ( $plugin_files as $file ) {
+			$headers = get_file_data( $file, array(
+				'Name'        => 'Plugin Name',
+				'Version'     => 'Version',
+				'RequiresWP'  => 'Requires at least',
+				'TestedWP'    => 'Tested up to',
+				'RequiresPHP' => 'Requires PHP',
+			) );
+			if ( ! empty( $headers['Name'] ) ) {
+				$main_file = $file;
+				break;
+			}
+		}
+		if ( ! $main_file ) {
+			return new WP_Error( 'invalid_plugin', 'No valid main plugin file found.', array( 'status' => 400 ) );
+		}
 
-		foreach ( $all_plugins as $file_name => $all_plugin ) {
-			if ( strpos( $file_name, $plugin_name ) !== false ) {
-				$slug = $file_name;
+		// Check WordPress version compatibility
+		global $wp_version;
+		if ( ! empty( $headers['RequiresWP'] ) && version_compare( $wp_version, $headers['RequiresWP'], '<' ) ) {
+			return new WP_Error( 'incompatible_wp', 'Plugin requires WordPress ' . $headers['RequiresWP'] . ' or higher.', array( 'status' => 400 ) );
+		}
+		if ( ! empty( $headers['TestedWP'] ) && version_compare( $wp_version, $headers['TestedWP'], '>' ) ) {
+			return new WP_Error( 'untested_wp', 'Plugin not tested with this WordPress version.', array( 'status' => 400 ) );
+		}
+
+		// Check PHP version compatibility
+		if ( ! empty( $headers['RequiresPHP'] ) && version_compare( PHP_VERSION, $headers['RequiresPHP'], '<' ) ) {
+			return new WP_Error( 'incompatible_php', 'Plugin requires PHP ' . $headers['RequiresPHP'] . ' or higher.', array( 'status' => 400 ) );
+		}
+		// Check for PHP files outside the main plugin directory or path traversal
+		$iterator = new RecursiveIteratorIterator(
+			new RecursiveDirectoryIterator( $tmp_dir, RecursiveDirectoryIterator::SKIP_DOTS ),
+			RecursiveIteratorIterator::SELF_FIRST
+		);
+		foreach ( $iterator as $fileinfo ) {
+			$realPath = $fileinfo->getRealPath();
+			if ( strpos( $realPath, realpath( $tmp_dir ) ) !== 0 ) {
+				return new WP_Error( 'invalid_file', 'Path traversal detected.', array( 'status' => 400 ) );
 			}
 		}
 
+		// Move to plugins directory
+		$dest = WP_PLUGIN_DIR . '/' . basename( $plugin_dir );
+		if ( file_exists( $dest ) ) {
+			return new WP_Error( 'plugin_exists', 'Plugin already exists.', array( 'status' => 400 ) );
+		}
+		rename( $plugin_dir, $dest );
+		rmdir( $tmp_dir );
+
+		// Activate if requested
+		$all_plugins = get_plugins();
+		$slug        = '';
+		foreach ( $all_plugins as $file_name => $all_plugin ) {
+			if ( strpos( $file_name, basename( $plugin_dir ) ) !== false ) {
+				$slug = $file_name;
+			}
+		}
 		if ( empty( $slug ) ) {
 			return new WP_Error( 'unable_to_activate_plugin', 'Unable to determine plugin name from uploaded file.', array( 'status' => 400 ) );
 		}
-
-		// Activate the plugin
 		if ( ! empty( $activate ) ) {
 			activate_plugin( $slug );
 		}
 		$plugin_data = get_plugin_data( WP_PLUGIN_DIR . '/' . $slug );
 
-		// Return success message
 		return rest_ensure_response( array(
 			'success'     => true,
 			'plugin_name' => $plugin_data['Name'],
@@ -1056,22 +1123,22 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 	 * @return WP_Error|WP_HTTP_Response|WP_REST_Response
 	 */
 	public function site_info() {
-		$blog_name = get_bloginfo( 'name' );
+		$blog_name       = get_bloginfo( 'name' );
 		$current_version = get_bloginfo( 'version' );
-		$url = get_bloginfo('url');
-		$wpurl = get_bloginfo('wpurl');
+		$url             = get_bloginfo( 'url' );
+		$wpurl           = get_bloginfo( 'wpurl' );
 
 		$result = [
-			'title' => $blog_name,
-			'version' => $current_version,
-			'home_url' => $url,
-			'wp_url' => $wpurl,
+			'title'       => $blog_name,
+			'version'     => $current_version,
+			'home_url'    => $url,
+			'wp_url'      => $wpurl,
 			'php_version' => phpversion(),
 			'php_handler' => $this->get_php_handler(),
-			'path' => ABSPATH,
-			'ssl' => $this->get_ssl_certificate_type(),
-			'wp_debug' => defined('WP_DEBUG') && WP_DEBUG,
-			'mysql' => $this->get_mysql_info()
+			'path'        => ABSPATH,
+			'ssl'         => $this->get_ssl_certificate_type(),
+			'wp_debug'    => defined( 'WP_DEBUG' ) && WP_DEBUG,
+			'mysql'       => $this->get_mysql_info()
 		];
 
 		return rest_ensure_response( $result );
@@ -1087,7 +1154,7 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 
 
 	// Private methods
-	
+
 	/**
 	 * Retrieves the PHP handler.
 	 *
@@ -1100,19 +1167,20 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 	/**
 	 * Retrieves MySQL information.
 	 *
-	 * @global wpdb $wpdb WordPress database abstraction object.
 	 * @return array MySQL information including version, user, database name, host, charset, and collate.
+	 * @global wpdb $wpdb WordPress database abstraction object.
 	 */
 	private function get_mysql_info() {
 		global $wpdb;
 		$info = array(
-			'version' => $wpdb->get_var("SELECT VERSION()"),
-			'user' => $wpdb->dbuser,
-			'name' => $wpdb->dbname,
-			'host' => $wpdb->dbhost,
-			'charset' => defined('DB_CHARSET') ? DB_CHARSET : '',
-			'collate' => defined('DB_COLLATE') ? DB_COLLATE : ''
+			'version' => $wpdb->get_var( "SELECT VERSION()" ),
+			'user'    => $wpdb->dbuser,
+			'name'    => $wpdb->dbname,
+			'host'    => $wpdb->dbhost,
+			'charset' => defined( 'DB_CHARSET' ) ? DB_CHARSET : '',
+			'collate' => defined( 'DB_COLLATE' ) ? DB_COLLATE : ''
 		);
+
 		return $info;
 	}
 
@@ -1125,38 +1193,38 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 	 *     - 'valid_from' (string): The date and time when the SSL certificate is valid from.
 	 *     - 'valid_to' (string): The date and time when the SSL certificate is valid until.
 	 *     - 'error' (string): Error message if any issues occur during the process.
-	 */	
+	 */
 	private function get_ssl_certificate_type() {
-		$url = get_site_url();
-		$parsed_url = parse_url($url);
-		$host = $parsed_url['host'];
+		$url        = get_site_url();
+		$parsed_url = parse_url( $url );
+		$host       = $parsed_url['host'];
 
-		$stream_context = stream_context_create(array("ssl" => array("capture_peer_cert" => true)));
-		$socket_client = @stream_socket_client("ssl://".$host.":443", $errno, $errstr, 30, STREAM_CLIENT_CONNECT, $stream_context);
+		$stream_context = stream_context_create( array( "ssl" => array( "capture_peer_cert" => true ) ) );
+		$socket_client  = @stream_socket_client( "ssl://" . $host . ":443", $errno, $errstr, 30, STREAM_CLIENT_CONNECT, $stream_context );
 
-		if (!$socket_client) {
-			return ['error' => "connection_failed" , 'error_msg' => "$host $errstr ($errno)"];
+		if ( ! $socket_client ) {
+			return [ 'error' => "connection_failed", 'error_msg' => "$host $errstr ($errno)" ];
 		}
 
-		$context_params = stream_context_get_params($socket_client);
-		$cert_resource = $context_params["options"]["ssl"]["peer_certificate"];
-		$cert_info = openssl_x509_parse($cert_resource);
+		$context_params = stream_context_get_params( $socket_client );
+		$cert_resource  = $context_params["options"]["ssl"]["peer_certificate"];
+		$cert_info      = openssl_x509_parse( $cert_resource );
 
-		if (!$cert_info) {
-			return ['error' => "unable_to_parse_ssl_certificate."];
+		if ( ! $cert_info ) {
+			return [ 'error' => "unable_to_parse_ssl_certificate." ];
 		}
 
-		date_default_timezone_set('UTC');
-		$issuer = $cert_info['issuer']['O'];
-		$valid_from = date('Y-m-d H:i:s', $cert_info['validFrom_time_t']);
-		$valid_to = date('Y-m-d H:i:s', $cert_info['validTo_time_t']);
-		$cert_type = isset($cert_info['extensions']['basicConstraints']) && $cert_info['extensions']['basicConstraints'] == 'CA:FALSE' ? 'end_entity_certificate' : 'ca_certificate';
+		date_default_timezone_set( 'UTC' );
+		$issuer     = $cert_info['issuer']['O'];
+		$valid_from = date( 'Y-m-d H:i:s', $cert_info['validFrom_time_t'] );
+		$valid_to   = date( 'Y-m-d H:i:s', $cert_info['validTo_time_t'] );
+		$cert_type  = isset( $cert_info['extensions']['basicConstraints'] ) && $cert_info['extensions']['basicConstraints'] == 'CA:FALSE' ? 'end_entity_certificate' : 'ca_certificate';
 
 		return [
-			"certificate_type" =>  $cert_type,
-			"issuer"  => $issuer,
-			"valid_from" => $valid_from,
-			"valid_to" => $valid_to
+			"certificate_type" => $cert_type,
+			"issuer"           => $issuer,
+			"valid_from"       => $valid_from,
+			"valid_to"         => $valid_to
 		];
 	}
 

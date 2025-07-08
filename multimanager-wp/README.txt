@@ -4,7 +4,7 @@ Tags: rest-api, custom api, manage sites, multiple site manager
 Requires at least: 6.3
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 1.1.3
+Stable tag: 1.1.4
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -64,6 +64,9 @@ If you need help using the plugin, please send us an email to support@icdsoft.co
 5. Log in to your WordPress Dashboard and give the application access to your account by approving the connection.
 
 == Changelog ==
+= 1.1.4
+* Fix = plugins manual upload checks
+
 = 1.1.3
 * Fix = plugins cached response
 
