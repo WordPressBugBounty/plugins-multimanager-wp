@@ -224,6 +224,20 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 				'permission_callback' => array( $this, 'updates_themes_permission_check' ),
 			),
 		) );
+		register_rest_route( $namespace, '/' . $themes . '/delete', array(
+			array(
+				'methods'             => WP_REST_Server::DELETABLE,
+				'callback'            => array( $this, 'delete_theme' ),
+				'permission_callback' => array( $this, 'delete_theme_permission_check' ),
+				'args'                => array(
+					'stylesheet' => array(
+						'required'    => true,
+						'description' => __( 'Stylesheet (slug) of the theme to delete.', 'multimanager-wp' ),
+						'type'        => 'string',
+					),
+				),
+			),
+		) );
 
 		register_rest_route( $namespace, '/' . $core, array(
 			array(
@@ -926,7 +940,7 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 		$download_file = @download_url( $download_link );
 
 		if ( is_wp_error( $download_file ) ) {
-			return new WP_Error( 'download_failed', 'download_failed', $download_file->get_error_message() );
+			return new WP_Error( 'theme_download_failed', 'theme_download_failed', $download_file->get_error_message() );
 		}
 
 		$themes_path  = WP_CONTENT_DIR . '/themes';
@@ -1051,6 +1065,173 @@ class MultiManager_WP_REST_API extends WP_REST_Controller {
 	 */
 	public function update_themes_permission_check() {
 		return current_user_can( 'update_themes' );
+	}
+
+	/**
+	 * Delete a theme by stylesheet (slug).
+	 *
+	 * Uses WordPress's built-in delete_theme() function for reliable deletion
+	 * with proper filesystem handling and cache management.
+	 *
+	 * @param WP_REST_Request $request The REST request containing 'stylesheet' parameter.
+	 *
+	 * @return WP_Error|WP_REST_Response Response with success status or error details.
+	 */
+	public function delete_theme( WP_REST_Request $request ) {
+		// Include required WordPress admin files.
+		require_once ABSPATH . 'wp-admin/includes/theme.php';
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+
+		$stylesheet = sanitize_text_field( wp_unslash( $request['stylesheet'] ) );
+
+		if ( empty( $stylesheet ) ) {
+			return new WP_Error(
+				'missing_stylesheet',
+				__( 'Theme stylesheet (slug) is required.', 'multimanager-wp' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		// Validate the theme exists before attempting deletion.
+		$theme = wp_get_theme( $stylesheet );
+		if ( ! $theme->exists() ) {
+			return new WP_Error(
+				'theme_not_found',
+				__( 'The requested theme does not exist.', 'multimanager-wp' ),
+				array( 'status' => 404 )
+			);
+		}
+
+		// Store theme name before deletion for the response message.
+		$theme_name = $theme->get( 'Name' );
+
+		// Prevent deletion of the currently active theme.
+		$current_theme = get_stylesheet();
+		if ( $stylesheet === $current_theme ) {
+			return new WP_Error(
+				'cannot_delete_active_theme',
+				__( 'You cannot delete the currently active theme.', 'multimanager-wp' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		// Prevent deletion of the parent theme if it's used by the active child theme.
+		$current_theme_obj = wp_get_theme();
+		if ( $current_theme_obj->parent() && $current_theme_obj->parent()->get_stylesheet() === $stylesheet ) {
+			return new WP_Error(
+				'cannot_delete_parent_theme',
+				__( 'You cannot delete the parent theme of the currently active theme.', 'multimanager-wp' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		// Initialize the WordPress filesystem.
+		add_filter( 'filesystem_method', array( $this, 'filter_filesystem_method' ) );
+		if ( ! WP_Filesystem() ) {
+			remove_filter( 'filesystem_method', array( $this, 'filter_filesystem_method' ) );
+			return new WP_Error(
+				'theme_deletion_failed',
+				__( 'Could not initialize the WordPress filesystem.', 'multimanager-wp' ),
+				array( 'status' => 500 )
+			);
+		}
+		remove_filter( 'filesystem_method', array( $this, 'filter_filesystem_method' ) );
+
+		// Use WordPress's built-in delete_theme() function.
+		$result = delete_theme( $stylesheet );
+
+		if ( is_wp_error( $result ) ) {
+			return new WP_Error(
+				'theme_deletion_failed',
+				$result->get_error_message(),
+				array( 'status' => 500 )
+			);
+		}
+
+		if ( true !== $result ) {
+			return new WP_Error(
+				'theme_deletion_failed',
+				sprintf(
+					/* translators: %s: Theme stylesheet */
+					__( 'Could not delete theme "%s". Please check file permissions.', 'multimanager-wp' ),
+					$stylesheet
+				),
+				array( 'status' => 500 )
+			);
+		}
+
+
+		return rest_ensure_response( array(
+			'success'    => true,
+			'stylesheet' => $stylesheet,
+			'message'    => sprintf(
+				/* translators: %s: Theme name */
+				__( 'Theme "%s" was successfully deleted.', 'multimanager-wp' ),
+				$theme_name
+			),
+		) );
+	}
+
+	/**
+	 * Recursively delete a directory and its contents.
+	 *
+	 * @param string $dir Directory path to delete.
+	 *
+	 * @return bool True on success, false on failure.
+	 */
+	private function recursive_delete_directory( $dir ) {
+		if ( ! is_dir( $dir ) ) {
+			return false;
+		}
+
+		// Check if directory is writable
+		if ( ! is_writable( $dir ) ) {
+			return false;
+		}
+
+		$files = array_diff( scandir( $dir ), array( '.', '..' ) );
+
+		foreach ( $files as $file ) {
+			$path = $dir . '/' . $file;
+
+			if ( is_dir( $path ) ) {
+				if ( ! $this->recursive_delete_directory( $path ) ) {
+					return false;
+				}
+			} else {
+				if ( ! is_writable( $path ) || ! @unlink( $path ) ) {
+					return false;
+				}
+			}
+		}
+
+		return @rmdir( $dir );
+	}
+
+	/**
+	 * Filter to force direct filesystem method.
+	 *
+	 * @return string
+	 */
+	public function filter_filesystem_method() {
+		return 'direct';
+	}
+
+	/**
+	 * Returns whether the current user has the capability to delete themes
+	 *
+	 * @return bool|WP_Error
+	 */
+	public function delete_theme_permission_check() {
+		if ( ! current_user_can( 'delete_themes' ) ) {
+			return new WP_Error(
+				'rest_cannot_delete_theme',
+				__( 'Sorry, you are not allowed to delete themes on this site.', 'multimanager-wp' ),
+				array( 'status' => rest_authorization_required_code() )
+			);
+		}
+
+		return true;
 	}
 
 

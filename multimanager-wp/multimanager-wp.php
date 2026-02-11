@@ -4,7 +4,7 @@
  * Plugin Name:       MultiManager WP
  * Plugin URI:        https://www.icdsoft.com/en/hosting/wordpress-manager
  * Description:       This plugin helps you connect your site to the ICDSoft WordPress MultiManager toolkit, which allows you to manage multiple WordPress sites.
- * Version:           1.1.4
+ * Version:           1.1.5
  * Author:            ICDSoft Hosting
  * Author URI:        https://icdsoft.com
  * Text Domain:       multimanager-wp
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * Plugin version.
  */
-const MULTIMANAGER_WP_VERSION = '1.1.4';
+const MULTIMANAGER_WP_VERSION = '1.1.5';
 
 /**
  * The code that runs during plugin activation.
